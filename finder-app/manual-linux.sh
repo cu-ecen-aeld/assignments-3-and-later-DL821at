@@ -6,16 +6,14 @@ set -e
 set -u
 
 # Default output directory
-OUTDIR=/tmp/aeld
+OUTDIR=/tmp/aesd-autograder
 KERNEL_REPO="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 KERNEL_VERSION="v5.15.163"
 BUSYBOX_VERSION="1_33_1"
 FINDER_APP_DIR=$(realpath $(dirname $0))  # Absolute path to the script's directory
+CONF_DIR=$(realpath ${FINDER_APP_DIR}/../conf)  # Points to the conf directory relative to FINDER_APP_DIR
 ARCH="arm64"
 CROSS_COMPILE="aarch64-none-linux-gnu-"
-
-# Directory to copy Image and Initramfs
-#AUTOGRADER_DIR=/tmp/aesd-autograder
 
 # Check if an output directory was provided, else use default
 if [ $# -lt 1 ]
@@ -113,8 +111,8 @@ cp writer ${OUTDIR}/rootfs/home/
 
 # Copy finder scripts and other necessary files from Assignment 2
 cp ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home/
-cp /home/dleevm/assignment-1-tale1433/conf/username.txt ${OUTDIR}/rootfs/home/
-cp /home/dleevm/assignment-1-tale1433/conf/assignment.txt ${OUTDIR}/rootfs/home/
+cp ${CONF_DIR}/username.txt ${OUTDIR}/rootfs/home/
+cp ${CONF_DIR}/assignment.txt ${OUTDIR}/rootfs/home/
 cp ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home/
 
 # Copy the autorun-qemu.sh script into the root filesystem /home directory
@@ -133,10 +131,4 @@ sudo chown -R root:root ${OUTDIR}/rootfs
 cd ${OUTDIR}/rootfs
 find . | cpio -o -H newc | gzip > ${OUTDIR}/initramfs.cpio.gz
 
-# Copy the kernel image and initramfs to the /tmp/aesd-autograder directory
-#echo "Copying the Image and Initramfs to ${AUTOGRADER_DIR}"
-#mkdir -p ${AUTOGRADER_DIR}
-#cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${AUTOGRADER_DIR}/
-#cp ${OUTDIR}/initramfs.cpio.gz ${AUTOGRADER_DIR}/
-
-echo "Script completed successfully. Kernel image and initramfs.cpio.gz created in ${OUTDIR}"
+echo "Script completed successfully. Kernel image and initramfs.cpio.gz created in ${OUTDIR}."
