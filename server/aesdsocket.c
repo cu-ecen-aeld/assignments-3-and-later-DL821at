@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
+#include <sys/time.h>  // For select()
 
 #define PORT "9000"
 #define BUFFER_SIZE 1024
@@ -137,36 +138,64 @@ int main(int argc, char *argv[]) {
     FILE *data_file;
     char client_ip[INET6_ADDRSTRLEN];
     bool daemon_mode = false;
+    struct timeval tv;
+    fd_set readfds;
     
+    // Open syslog
     openlog("aesdsocket", LOG_PID, LOG_USER);
+
+    // Remove the file before each run to ensure it's cleared
     remove(DATA_FILE);
     syslog(LOG_INFO, "Removed file %s before starting", DATA_FILE);
 
+    // Check for the -d argument to run in daemon mode
     if (argc > 1 && strcmp(argv[1], "-d") == 0) {
         daemon_mode = true;
     }
 
+    // Set up signal handling for graceful exit
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
+    // Setup server socket using getaddrinfo
     if (setup_server_socket() == -1) {
         syslog(LOG_ERR, "Failed to set up server socket");
         exit(EXIT_FAILURE);
     }
 
+    // Run the program as a daemon if -d flag is provided
     if (daemon_mode) {
         daemonize();
         syslog(LOG_INFO, "Running in daemon mode");
     }
 
     while (!stop) {
+        // Use select() to add a timeout to the accept() call
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+
+        // Timeout of 1 second
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+
+        int ret = select(server_fd + 1, &readfds, NULL, NULL, &tv);
+        if (ret == -1) {
+            syslog(LOG_ERR, "select error");
+            break;
+        } else if (ret == 0) {
+            // Timeout occurred, check stop flag and continue
+            if (stop) break;
+            continue;
+        }
+
+        // Accept a client connection
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
         if (client_fd < 0) {
-            if (stop) break;
             syslog(LOG_ERR, "Accept failed");
             exit(EXIT_FAILURE);
         }
 
+        // Get the client IP address
         if (client_addr.ss_family == AF_INET) {
             struct sockaddr_in *s = (struct sockaddr_in *)&client_addr;
             inet_ntop(AF_INET, &s->sin_addr, client_ip, sizeof client_ip);
@@ -175,34 +204,46 @@ int main(int argc, char *argv[]) {
             inet_ntop(AF_INET6, &s->sin6_addr, client_ip, sizeof client_ip);
         }
 
+        // Log accepted connection
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
         
-        data_file = fopen(DATA_FILE, "a+");
+        // Open the file for appending data
+        data_file = fopen(DATA_FILE, "a");
         if (data_file == NULL) {
             syslog(LOG_ERR, "Failed to open file");
             exit(EXIT_FAILURE);
         }
         
+        // Read data from the client and write to the file
         while ((bytes_read = recv(client_fd, buffer, BUFFER_SIZE, 0)) > 0) {
             fwrite(buffer, 1, bytes_read, data_file);
-//            fflush(data_file);
-
+            
+            // If newline is found, send back the contents of the file
             if (strchr(buffer, '\n')) {
-                fseek(data_file, 0, SEEK_SET);
+                fclose(data_file);  // Close the file after writing
+                data_file = fopen(DATA_FILE, "r");  // Reopen the file for reading
+
+                // Send file contents back to the client
                 while (fgets(buffer, BUFFER_SIZE, data_file) != NULL) {
                     send(client_fd, buffer, strlen(buffer), 0);
                 }
+
+                fclose(data_file);  // Close after reading
+                break;  // Process the next client connection
             }
         }
-        
-        fclose(data_file);
+
+        // Log closed connection
         syslog(LOG_INFO, "Closed connection from %s", client_ip);
         close(client_fd);
         client_fd = -1;
     }
 
+    // Cleanup on exit
     clean_up();
     return 0;
 }
+
+
 
 
