@@ -4,14 +4,13 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netdb.h>
-#include <syslog.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/time.h>  // For select()
 
-#define PORT "9000"
+#define PORT "10022"
 #define BUFFER_SIZE 1024
 #define DATA_FILE "/var/tmp/aesdsocketdata"
 #define BACKLOG 10
@@ -21,7 +20,7 @@ volatile sig_atomic_t stop = 0;
 
 // Signal handler to catch SIGINT and SIGTERM
 void handle_signal(int signo) {
-    syslog(LOG_INFO, "Caught signal, exiting");
+    printf("aesdsocket: Caught signal, exiting\n");
     stop = 1;
 }
 
@@ -29,20 +28,19 @@ void handle_signal(int signo) {
 void clean_up() {
     if (client_fd != -1) close(client_fd);
     if (server_fd != -1) close(server_fd);
-    
+
     // Remove the file only if a signal was received
     if (stop) {
         remove(DATA_FILE);
-        syslog(LOG_INFO, "Removed file %s", DATA_FILE);
+        printf("aesdsocket: Removed data file\n");
     }
-    
-    syslog(LOG_INFO, "Cleaned up and exiting");
-    closelog();
+
+    printf("aesdsocket: Cleaned up and exiting\n");
 }
 
 // Function to set up the server socket using getaddrinfo
 int setup_server_socket() {
-    struct addrinfo hints, *servinfo, *p;
+    struct addrinfo hints, * servinfo, * p;
     int status;
     int yes = 1;  // For setting socket options (SO_REUSEADDR)
 
@@ -54,7 +52,7 @@ int setup_server_socket() {
 
     // Get server info
     if ((status = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
-        syslog(LOG_ERR, "getaddrinfo error: %s", gai_strerror(status));
+        printf("aesdsocket: getaddrinfo error\n");
         return -1;
     }
 
@@ -67,14 +65,14 @@ int setup_server_socket() {
 
         // Set the SO_REUSEADDR option to avoid "Address already in use" error
         if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
-            syslog(LOG_ERR, "setsockopt error");
+            printf("aesdsocket: setsockopt error\n");
             close(server_fd);
             return -1;
         }
 
         // Bind to the port
         if (bind(server_fd, p->ai_addr, p->ai_addrlen) == -1) {
-            syslog(LOG_ERR, "Binding failed");
+            printf("aesdsocket: Binding failed\n");
             close(server_fd);
             continue;
         }
@@ -84,7 +82,7 @@ int setup_server_socket() {
     }
 
     if (p == NULL) {
-        syslog(LOG_ERR, "Failed to bind socket");
+        printf("aesdsocket: Failed to bind socket\n");
         freeaddrinfo(servinfo);
         return -1;
     }
@@ -92,11 +90,12 @@ int setup_server_socket() {
     freeaddrinfo(servinfo);
 
     if (listen(server_fd, BACKLOG) == -1) {
-        syslog(LOG_ERR, "Listening failed");
+        printf("aesdsocket: Listening failed\n");
         close(server_fd);
         return -1;
     }
 
+    printf("aesdsocket: Socket bound to port %s\n", PORT);
     return server_fd;
 }
 
@@ -106,7 +105,7 @@ void daemonize() {
 
     pid = fork();
     if (pid < 0) {
-        syslog(LOG_ERR, "Fork failed");
+        printf("aesdsocket: Fork failed\n");
         exit(EXIT_FAILURE);
     }
     if (pid > 0) {
@@ -114,7 +113,7 @@ void daemonize() {
     }
 
     if (setsid() < 0) {
-        syslog(LOG_ERR, "setsid failed");
+        printf("aesdsocket: setsid failed\n");
         exit(EXIT_FAILURE);
     }
 
@@ -122,7 +121,7 @@ void daemonize() {
 
     pid = fork();
     if (pid < 0) {
-        syslog(LOG_ERR, "Fork failed");
+        printf("aesdsocket: Fork failed\n");
         exit(EXIT_FAILURE);
     }
     if (pid > 0) {
@@ -130,23 +129,23 @@ void daemonize() {
     }
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     struct sockaddr_storage client_addr;
     socklen_t addr_len = sizeof(client_addr);
     char buffer[BUFFER_SIZE];
     ssize_t bytes_read;
-    FILE *data_file;
+    FILE* data_file;
     char client_ip[INET6_ADDRSTRLEN];
     bool daemon_mode = false;
     struct timeval tv;
     fd_set readfds;
-    
-    // Open syslog
-    openlog("aesdsocket", LOG_PID, LOG_USER);
+
+    // Program start
+    printf("aesdsocket: Program started\n");
 
     // Remove the file before each run to ensure it's cleared
     remove(DATA_FILE);
-    syslog(LOG_INFO, "Removed file %s before starting", DATA_FILE);
+    printf("aesdsocket: Removed previous data file\n");
 
     // Check for the -d argument to run in daemon mode
     if (argc > 1 && strcmp(argv[1], "-d") == 0) {
@@ -159,14 +158,14 @@ int main(int argc, char *argv[]) {
 
     // Setup server socket using getaddrinfo
     if (setup_server_socket() == -1) {
-        syslog(LOG_ERR, "Failed to set up server socket");
+        printf("aesdsocket: Failed to set up server socket\n");
         exit(EXIT_FAILURE);
     }
 
     // Run the program as a daemon if -d flag is provided
     if (daemon_mode) {
         daemonize();
-        syslog(LOG_INFO, "Running in daemon mode");
+        printf("aesdsocket: Running in daemon mode\n");
     }
 
     while (!stop) {
@@ -180,44 +179,47 @@ int main(int argc, char *argv[]) {
 
         int ret = select(server_fd + 1, &readfds, NULL, NULL, &tv);
         if (ret == -1) {
-            syslog(LOG_ERR, "select error");
+            printf("aesdsocket: select error\n");
             break;
-        } else if (ret == 0) {
+        }
+        else if (ret == 0) {
             // Timeout occurred, check stop flag and continue
             if (stop) break;
             continue;
         }
 
         // Accept a client connection
-        client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+        client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
-            syslog(LOG_ERR, "Accept failed");
+            printf("aesdsocket: Accept failed\n");
             exit(EXIT_FAILURE);
         }
 
         // Get the client IP address
         if (client_addr.ss_family == AF_INET) {
-            struct sockaddr_in *s = (struct sockaddr_in *)&client_addr;
+            struct sockaddr_in* s = (struct sockaddr_in*)&client_addr;
             inet_ntop(AF_INET, &s->sin_addr, client_ip, sizeof client_ip);
-        } else {
-            struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_addr;
+        }
+        else {
+            struct sockaddr_in6* s = (struct sockaddr_in6*)&client_addr;
             inet_ntop(AF_INET6, &s->sin6_addr, client_ip, sizeof client_ip);
         }
 
         // Log accepted connection
-        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
-        
+        printf("aesdsocket: Accepted connection from %s\n", client_ip);
+
         // Open the file for appending data
         data_file = fopen(DATA_FILE, "a");
         if (data_file == NULL) {
-            syslog(LOG_ERR, "Failed to open file");
+            printf("aesdsocket: Failed to open data file\n");
             exit(EXIT_FAILURE);
         }
-        
+
         // Read data from the client and write to the file
         while ((bytes_read = recv(client_fd, buffer, BUFFER_SIZE, 0)) > 0) {
             fwrite(buffer, 1, bytes_read, data_file);
-            
+            printf("aesdsocket: Received data: %s\n", buffer);
+
             // If newline is found, send back the contents of the file
             if (strchr(buffer, '\n')) {
                 fclose(data_file);  // Close the file after writing
@@ -226,6 +228,7 @@ int main(int argc, char *argv[]) {
                 // Send file contents back to the client
                 while (fgets(buffer, BUFFER_SIZE, data_file) != NULL) {
                     send(client_fd, buffer, strlen(buffer), 0);
+                    printf("aesdsocket: Sent data back to client\n");
                 }
 
                 fclose(data_file);  // Close after reading
@@ -234,7 +237,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Log closed connection
-        syslog(LOG_INFO, "Closed connection from %s", client_ip);
+        printf("aesdsocket: Closed connection from %s\n", client_ip);
         close(client_fd);
         client_fd = -1;
     }
@@ -243,7 +246,3 @@ int main(int argc, char *argv[]) {
     clean_up();
     return 0;
 }
-
-
-
-
