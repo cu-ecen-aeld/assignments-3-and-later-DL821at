@@ -4,13 +4,16 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <syslog.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/time.h>  // For select()
+#include <sys/stat.h>  // For mkdir()
+#include <errno.h>     // For error codes like EEXIST
 
-#define PORT "10022"
+#define PORT "9000"
 #define BUFFER_SIZE 1024
 #define DATA_FILE "/var/tmp/aesdsocketdata"
 #define BACKLOG 10
@@ -20,7 +23,7 @@ volatile sig_atomic_t stop = 0;
 
 // Signal handler to catch SIGINT and SIGTERM
 void handle_signal(int signo) {
-    printf("aesdsocket: Caught signal, exiting\n");
+    syslog(LOG_INFO, "Caught signal, exiting");
     stop = 1;
 }
 
@@ -32,10 +35,11 @@ void clean_up() {
     // Remove the file only if a signal was received
     if (stop) {
         remove(DATA_FILE);
-        printf("aesdsocket: Removed data file\n");
+        syslog(LOG_INFO, "Removed file %s", DATA_FILE);
     }
 
-    printf("aesdsocket: Cleaned up and exiting\n");
+    syslog(LOG_INFO, "Cleaned up and exiting");
+    closelog();
 }
 
 // Function to set up the server socket using getaddrinfo
@@ -52,7 +56,7 @@ int setup_server_socket() {
 
     // Get server info
     if ((status = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
-        printf("aesdsocket: getaddrinfo error\n");
+        syslog(LOG_ERR, "getaddrinfo error: %s", gai_strerror(status));
         return -1;
     }
 
@@ -65,14 +69,14 @@ int setup_server_socket() {
 
         // Set the SO_REUSEADDR option to avoid "Address already in use" error
         if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
-            printf("aesdsocket: setsockopt error\n");
+            syslog(LOG_ERR, "setsockopt error");
             close(server_fd);
             return -1;
         }
 
         // Bind to the port
         if (bind(server_fd, p->ai_addr, p->ai_addrlen) == -1) {
-            printf("aesdsocket: Binding failed\n");
+            syslog(LOG_ERR, "Binding failed");
             close(server_fd);
             continue;
         }
@@ -82,7 +86,7 @@ int setup_server_socket() {
     }
 
     if (p == NULL) {
-        printf("aesdsocket: Failed to bind socket\n");
+        syslog(LOG_ERR, "Failed to bind socket");
         freeaddrinfo(servinfo);
         return -1;
     }
@@ -90,12 +94,11 @@ int setup_server_socket() {
     freeaddrinfo(servinfo);
 
     if (listen(server_fd, BACKLOG) == -1) {
-        printf("aesdsocket: Listening failed\n");
+        syslog(LOG_ERR, "Listening failed");
         close(server_fd);
         return -1;
     }
 
-    printf("aesdsocket: Socket bound to port %s\n", PORT);
     return server_fd;
 }
 
@@ -105,7 +108,7 @@ void daemonize() {
 
     pid = fork();
     if (pid < 0) {
-        printf("aesdsocket: Fork failed\n");
+        syslog(LOG_ERR, "Fork failed");
         exit(EXIT_FAILURE);
     }
     if (pid > 0) {
@@ -113,7 +116,7 @@ void daemonize() {
     }
 
     if (setsid() < 0) {
-        printf("aesdsocket: setsid failed\n");
+        syslog(LOG_ERR, "setsid failed");
         exit(EXIT_FAILURE);
     }
 
@@ -121,7 +124,7 @@ void daemonize() {
 
     pid = fork();
     if (pid < 0) {
-        printf("aesdsocket: Fork failed\n");
+        syslog(LOG_ERR, "Fork failed");
         exit(EXIT_FAILURE);
     }
     if (pid > 0) {
@@ -140,12 +143,18 @@ int main(int argc, char* argv[]) {
     struct timeval tv;
     fd_set readfds;
 
-    // Program start
-    printf("aesdsocket: Program started\n");
+    // Open syslog
+    openlog("aesdsocket", LOG_PID, LOG_USER);
+
+    // Ensure /var/tmp exists
+    if (mkdir("/var/tmp", 0777) == -1 && errno != EEXIST) {
+        syslog(LOG_ERR, "Failed to create /var/tmp directory");
+        exit(EXIT_FAILURE);
+    }
 
     // Remove the file before each run to ensure it's cleared
     remove(DATA_FILE);
-    printf("aesdsocket: Removed previous data file\n");
+    syslog(LOG_INFO, "Removed file %s before starting", DATA_FILE);
 
     // Check for the -d argument to run in daemon mode
     if (argc > 1 && strcmp(argv[1], "-d") == 0) {
@@ -158,14 +167,14 @@ int main(int argc, char* argv[]) {
 
     // Setup server socket using getaddrinfo
     if (setup_server_socket() == -1) {
-        printf("aesdsocket: Failed to set up server socket\n");
+        syslog(LOG_ERR, "Failed to set up server socket");
         exit(EXIT_FAILURE);
     }
 
     // Run the program as a daemon if -d flag is provided
     if (daemon_mode) {
         daemonize();
-        printf("aesdsocket: Running in daemon mode\n");
+        syslog(LOG_INFO, "Running in daemon mode");
     }
 
     while (!stop) {
@@ -179,7 +188,7 @@ int main(int argc, char* argv[]) {
 
         int ret = select(server_fd + 1, &readfds, NULL, NULL, &tv);
         if (ret == -1) {
-            printf("aesdsocket: select error\n");
+            syslog(LOG_ERR, "select error");
             break;
         }
         else if (ret == 0) {
@@ -191,7 +200,7 @@ int main(int argc, char* argv[]) {
         // Accept a client connection
         client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
-            printf("aesdsocket: Accept failed\n");
+            syslog(LOG_ERR, "Accept failed");
             exit(EXIT_FAILURE);
         }
 
@@ -206,29 +215,31 @@ int main(int argc, char* argv[]) {
         }
 
         // Log accepted connection
-        printf("aesdsocket: Accepted connection from %s\n", client_ip);
+        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
         // Open the file for appending data
         data_file = fopen(DATA_FILE, "a");
         if (data_file == NULL) {
-            printf("aesdsocket: Failed to open data file\n");
+            syslog(LOG_ERR, "Failed to open file for appending: %s", DATA_FILE);
             exit(EXIT_FAILURE);
         }
 
         // Read data from the client and write to the file
         while ((bytes_read = recv(client_fd, buffer, BUFFER_SIZE, 0)) > 0) {
             fwrite(buffer, 1, bytes_read, data_file);
-            printf("aesdsocket: Received data: %s\n", buffer);
 
             // If newline is found, send back the contents of the file
             if (strchr(buffer, '\n')) {
                 fclose(data_file);  // Close the file after writing
                 data_file = fopen(DATA_FILE, "r");  // Reopen the file for reading
+                if (data_file == NULL) {
+                    syslog(LOG_ERR, "Failed to open file for reading: %s", DATA_FILE);
+                    exit(EXIT_FAILURE);
+                }
 
                 // Send file contents back to the client
                 while (fgets(buffer, BUFFER_SIZE, data_file) != NULL) {
                     send(client_fd, buffer, strlen(buffer), 0);
-                    printf("aesdsocket: Sent data back to client\n");
                 }
 
                 fclose(data_file);  // Close after reading
@@ -237,7 +248,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Log closed connection
-        printf("aesdsocket: Closed connection from %s\n", client_ip);
+        syslog(LOG_INFO, "Closed connection from %s", client_ip);
         close(client_fd);
         client_fd = -1;
     }
