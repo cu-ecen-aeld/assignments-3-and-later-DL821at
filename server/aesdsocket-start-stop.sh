@@ -1,48 +1,48 @@
-#!/bin/bash
+#!/bin/sh
 
-# Path to the aesdsocket binary
-DAEMON_PATH="/home/dleevm/assignment-1-tale1433/server/aesdsocket"
-DAEMON_NAME="aesdsocket"
-PIDFILE="/var/run/${DAEMON_NAME}.pid"
+# Path to the aesdsocket executable on the target system
+AESDSOCKET_PATH="/usr/bin/aesdsocket"
+PID_FILE="/var/run/aesdsocket.pid"
+
+start() {
+    echo "Starting aesdsocket..."
+    start-stop-daemon --start --quiet --background --make-pidfile --pidfile $PID_FILE --exec $AESDSOCKET_PATH -- -d
+    if [ $? -eq 0 ]; then
+        echo "aesdsocket started."
+    else
+        echo "Failed to start aesdsocket."
+        exit 1
+    fi
+}
+
+stop() {
+    echo "Stopping aesdsocket..."
+    start-stop-daemon --stop --quiet --pidfile $PID_FILE --signal SIGTERM
+    if [ $? -eq 0 ]; then
+        echo "aesdsocket stopped."
+    else
+        echo "Failed to stop aesdsocket."
+        exit 1
+    fi
+    # Clean up PID file
+    if [ -f $PID_FILE ]; then
+        rm -f $PID_FILE
+    fi
+}
 
 case "$1" in
     start)
-        echo "Starting ${DAEMON_NAME}..."
-        if [ -f "$PIDFILE" ]; then
-            echo "${DAEMON_NAME} is already running."
-        else
-            start-stop-daemon --start --background --make-pidfile --pidfile "$PIDFILE" --exec "$DAEMON_PATH" -- -d
-            echo "${DAEMON_NAME} started."
-        fi
+        start
         ;;
-    
     stop)
-        echo "Stopping ${DAEMON_NAME}..."
-        if [ -f "$PIDFILE" ]; then
-            start-stop-daemon --stop --pidfile "$PIDFILE" --signal SIGTERM
-            rm "$PIDFILE"
-            echo "${DAEMON_NAME} stopped."
-        else
-            echo "${DAEMON_NAME} is not running."
-        fi
+        stop
         ;;
-    
     restart)
-        echo "Restarting ${DAEMON_NAME}..."
-        $0 stop
-        $0 start
+        stop
+        start
         ;;
-    
-    status)
-        if [ -f "$PIDFILE" ]; then
-            echo "${DAEMON_NAME} is running with PID $(cat "$PIDFILE")."
-        else
-            echo "${DAEMON_NAME} is not running."
-        fi
-        ;;
-    
     *)
-        echo "Usage: $0 {start|stop|restart|status}"
+        echo "Usage: $0 {start|stop|restart}"
         exit 1
         ;;
 esac
