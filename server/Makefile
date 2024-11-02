@@ -20,6 +20,7 @@ all: $(TARGET)
 # First compile source to object file, then link to create executable
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET)
+	chmod +x $(TARGET)
 
 # Compile source files into object files
 $(OBJS): $(SRCS)
