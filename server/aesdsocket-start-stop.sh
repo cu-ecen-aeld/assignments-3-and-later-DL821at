@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Path to the aesdsocket executable on the target system
-:<<END AESDSOCKET_PATH="/usr/bin/aesdsocket"
+: <<'END' AESDSOCKET_PATH="/usr/bin/aesdsocket"
 PID_FILE="/var/run/aesdsocket.pid"
 
 start() {
@@ -32,7 +32,7 @@ stop() {
 END
 case "$1" in
     start)
-        start-stop-daemon -S -n aesdsocket -a /usr/bin/aesdsocket -- -d
+        start-stop-daemon -S -n aesdsocket -a aesdsocket -- -d
         ;;
     stop)
         start-stop-daemon -K -n aesdsocket
