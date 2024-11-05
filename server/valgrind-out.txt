@@ -19,7 +19,7 @@
 --22003-- Arch and hwcaps: AMD64, LittleEndian, amd64-cx16-lzcnt-rdtscp-sse3-ssse3
 --22003-- Page sizes: currently 4096, max supported 4096
 --22003-- Valgrind library directory: /usr/lib/x86_64-linux-gnu/valgrind
---22003-- Reading syms from /home/dleevm/assignment-1-tale1433/server/aesdsocket
+--22003-- Reading syms from /home/dlee/assignment-1-tale1433/server/aesdsocket
 --22003-- Reading syms from /usr/lib/x86_64-linux-gnu/ld-2.31.so
 --22003--   Considering /usr/lib/debug/.build-id/db/0420f708b806cf03260aadb916c330049580b7.debug ..
 --22003--   .. build-id is valid
