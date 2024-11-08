@@ -117,6 +117,11 @@ void daemonize() {
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
+
+    // Set up signal handling for the daemonized process
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    syslog(LOG_INFO, "Signal handlers set up for daemon mode");
 }
 
 int main(int argc, char* argv[]) {
