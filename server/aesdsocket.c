@@ -131,15 +131,14 @@ int main(int argc, char* argv[]) {
     // Open syslog
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
-    // Ensure /var/tmp exists
-    if (mkdir("/var/tmp", 0777) == -1 && errno != EEXIST) {
-        syslog(LOG_ERR, "Failed to create /var/tmp directory");
+    // Ensure /var/tmp/aesdsocketdata is truncated at the start of each run
+    data_file = fopen(DATA_FILE, "w");
+    if (data_file == NULL) {
+        syslog(LOG_ERR, "Failed to open file for truncation: %s", strerror(errno));
+        clean_up();
         exit(EXIT_FAILURE);
     }
-
-    // Remove the file before each run to ensure it's cleared
-    remove(DATA_FILE);
-    syslog(LOG_INFO, "Removed file %s before starting", DATA_FILE);
+    fclose(data_file);
 
     // Check for the -d argument to run in daemon mode
     if (argc > 1 && strcmp(argv[1], "-d") == 0) daemon_mode = true;
