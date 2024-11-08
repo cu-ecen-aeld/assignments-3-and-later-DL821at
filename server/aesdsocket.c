@@ -9,8 +9,9 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
-#include <sys/stat.h>
-#include <errno.h>
+#include <sys/time.h>  // For select()
+#include <sys/stat.h>  // For mkdir()
+#include <errno.h>     // For error codes like EEXIST
 
 #define PORT "9000"
 #define BUFFER_SIZE 1024
@@ -20,7 +21,7 @@
 int server_fd = -1, client_fd = -1;
 volatile sig_atomic_t stop = 0;
 
-// Signal handler to catch SIGINT and SIGTERM, setting the stop flag
+// Signal handler to catch SIGINT and SIGTERM
 void handle_signal(int signo) {
     syslog(LOG_INFO, "Caught signal, exiting");
     stop = 1;
@@ -36,20 +37,22 @@ void clean_up() {
         remove(DATA_FILE);
         syslog(LOG_INFO, "Removed file %s", DATA_FILE);
     }
+
+    syslog(LOG_INFO, "Cleaned up and exiting");
     closelog();
 }
 
 // Function to set up the server socket using getaddrinfo
 int setup_server_socket() {
-    struct addrinfo hints, *servinfo, *p;
+    struct addrinfo hints, * servinfo, * p;
     int status;
     int yes = 1;  // For setting socket options (SO_REUSEADDR)
 
     // Set up hints for getaddrinfo
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;        // IPv4 or IPv6
-    hints.ai_socktype = SOCK_STREAM;    // Stream socket
-    hints.ai_flags = AI_PASSIVE;        // Bind to the IP of the host
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
 
     // Get server info
     if ((status = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
@@ -60,7 +63,9 @@ int setup_server_socket() {
     // Loop through all results and bind to the first we can
     for (p = servinfo; p != NULL; p = p->ai_next) {
         server_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (server_fd == -1) continue;
+        if (server_fd == -1) {
+            continue;
+        }
 
         // Set the SO_REUSEADDR option to avoid "Address already in use" error
         if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
@@ -71,6 +76,7 @@ int setup_server_socket() {
 
         // Bind to the port
         if (bind(server_fd, p->ai_addr, p->ai_addrlen) == -1) {
+            syslog(LOG_ERR, "Binding failed");
             close(server_fd);
             continue;
         }
@@ -98,30 +104,32 @@ int setup_server_socket() {
 
 // Daemonize the process
 void daemonize() {
-    pid_t pid = fork();
-    if (pid < 0) exit(EXIT_FAILURE);   // Fork failed
-    if (pid > 0) exit(EXIT_SUCCESS);   // Parent exits
+    pid_t pid;
 
-    // Start a new session
-    if (setsid() < 0) exit(EXIT_FAILURE);
+    pid = fork();
+    if (pid < 0) {
+        syslog(LOG_ERR, "Fork failed");
+        exit(EXIT_FAILURE);
+    }
+    if (pid > 0) {
+        exit(EXIT_SUCCESS);
+    }
 
-    // Ignore SIGHUP
+    if (setsid() < 0) {
+        syslog(LOG_ERR, "setsid failed");
+        exit(EXIT_FAILURE);
+    }
+
     signal(SIGHUP, SIG_IGN);
 
-    // Fork again to prevent reacquiring a controlling terminal
     pid = fork();
-    if (pid < 0) exit(EXIT_FAILURE);
-    if (pid > 0) exit(EXIT_SUCCESS);   // Parent exits
-
-    // Redirect standard I/O to /dev/null
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
-
-    // Set up signal handling for the daemonized process
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
-    syslog(LOG_INFO, "Signal handlers set up for daemon mode");
+    if (pid < 0) {
+        syslog(LOG_ERR, "Fork failed");
+        exit(EXIT_FAILURE);
+    }
+    if (pid > 0) {
+        exit(EXIT_SUCCESS);
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -132,21 +140,26 @@ int main(int argc, char* argv[]) {
     FILE* data_file;
     char client_ip[INET6_ADDRSTRLEN];
     bool daemon_mode = false;
+    struct timeval tv;
+    fd_set readfds;
 
     // Open syslog
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
-    // Ensure /var/tmp/aesdsocketdata is truncated at the start of each run
-    data_file = fopen(DATA_FILE, "w");
-    if (data_file == NULL) {
-        syslog(LOG_ERR, "Failed to open file for truncation: %s", strerror(errno));
-        clean_up();
+    // Ensure /var/tmp exists
+    if (mkdir("/var/tmp", 0777) == -1 && errno != EEXIST) {
+        syslog(LOG_ERR, "Failed to create /var/tmp directory");
         exit(EXIT_FAILURE);
     }
-    fclose(data_file);
+
+    // Remove the file before each run to ensure it's cleared
+    remove(DATA_FILE);
+    syslog(LOG_INFO, "Removed file %s before starting", DATA_FILE);
 
     // Check for the -d argument to run in daemon mode
-    if (argc > 1 && strcmp(argv[1], "-d") == 0) daemon_mode = true;
+    if (argc > 1 && strcmp(argv[1], "-d") == 0) {
+        daemon_mode = true;
+    }
 
     // Set up signal handling for graceful exit
     signal(SIGINT, handle_signal);
@@ -165,19 +178,38 @@ int main(int argc, char* argv[]) {
     }
 
     while (!stop) {
+        // Use select() to add a timeout to the accept() call
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+
+        // Timeout of 1 second
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+
+        int ret = select(server_fd + 1, &readfds, NULL, NULL, &tv);
+        if (ret == -1) {
+            syslog(LOG_ERR, "select error");
+            break;
+        }
+        else if (ret == 0) {
+            // Timeout occurred, check stop flag and continue
+            if (stop) break;
+            continue;
+        }
+
         // Accept a client connection
         client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
-            if (stop) break;
             syslog(LOG_ERR, "Accept failed");
-            continue;
+            exit(EXIT_FAILURE);
         }
 
         // Get the client IP address
         if (client_addr.ss_family == AF_INET) {
             struct sockaddr_in* s = (struct sockaddr_in*)&client_addr;
             inet_ntop(AF_INET, &s->sin_addr, client_ip, sizeof client_ip);
-        } else {
+        }
+        else {
             struct sockaddr_in6* s = (struct sockaddr_in6*)&client_addr;
             inet_ntop(AF_INET6, &s->sin6_addr, client_ip, sizeof client_ip);
         }
@@ -188,10 +220,8 @@ int main(int argc, char* argv[]) {
         // Open the file for appending data
         data_file = fopen(DATA_FILE, "a");
         if (data_file == NULL) {
-            syslog(LOG_ERR, "Failed to open file for appending");
-            close(client_fd);
-            client_fd = -1;
-            continue;
+            syslog(LOG_ERR, "Failed to open file for appending: %s", DATA_FILE);
+            exit(EXIT_FAILURE);
         }
 
         // Read data from the client and write to the file
@@ -203,10 +233,8 @@ int main(int argc, char* argv[]) {
                 fclose(data_file);  // Close the file after writing
                 data_file = fopen(DATA_FILE, "r");  // Reopen the file for reading
                 if (data_file == NULL) {
-                    syslog(LOG_ERR, "Failed to open file for reading");
-                    close(client_fd);
-                    client_fd = -1;
-                    continue;
+                    syslog(LOG_ERR, "Failed to open file for reading: %s", DATA_FILE);
+                    exit(EXIT_FAILURE);
                 }
 
                 // Send file contents back to the client
