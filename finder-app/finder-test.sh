@@ -9,11 +9,14 @@ set -u
 # Ensure the PATH includes /usr/bin
 export PATH=$PATH:/usr/bin
 
+# Define the configuration directory
+CONFIG_DIR="/etc/finder-app/conf"
+
 NUMFILES=10
 WRITESTR=AELD_IS_FUN
 WRITEDIR=/tmp/aeld-data
-username=$(cat /home/dlee/a3/conf/username.txt)
-assignment=$(cat /home/dlee/a3/conf/assignment.txt)
+username=$(cat "$CONFIG_DIR/username.txt")
+assignment=$(cat "$CONFIG_DIR/assignment.txt")
 
 if [ $# -lt 3 ]
 then
