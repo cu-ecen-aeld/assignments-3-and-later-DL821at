@@ -4,7 +4,7 @@ SRCS = aesdsocket.c
 OBJS = aesdsocket.o
 
 # Compiler and flags
-CC := gcc
+CC ?= gcc
 CFLAGS = -g -Wall -Werror
 
 # If Cross Compiler provided as argument
