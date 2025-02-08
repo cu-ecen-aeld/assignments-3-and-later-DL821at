@@ -19,7 +19,7 @@ all: $(TARGET)
 
 # First compile source to object file, then link to create executable
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET) $(TARGET_LDFLAGS) --hash-style=gnu
+	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET) $(TARGET_LDFLAGS) -Wl,--hash-style=gnu
 	chmod +x $(TARGET)
 
 # Compile source files into object files
