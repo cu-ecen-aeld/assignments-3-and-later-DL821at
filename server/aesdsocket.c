@@ -53,10 +53,12 @@ void clean_up() {
     if (server_fd != -1) close(server_fd);
 
     // Remove the file only if a signal was received
-    if (stop) {
-        remove(DATA_FILE);
-        syslog(LOG_INFO, "Removed file %s", DATA_FILE);
-    }
+    // For testing purposes, the removal of DATA_FILE is commented out
+    // so that the file persists for validation.
+    // if (stop) {
+    //     remove(DATA_FILE);
+    //     syslog(LOG_INFO, "Removed file %s", DATA_FILE);
+    // }
 
     syslog(LOG_INFO, "Cleaned up and exiting");
     closelog();
@@ -320,55 +322,6 @@ int main(int argc, char* argv[]) {
             syslog(LOG_ERR, "Accept failed");
             exit(EXIT_FAILURE);
         }
-        /*
-        // Get the client IP address
-        if (client_addr.ss_family == AF_INET) {
-            struct sockaddr_in* s = (struct sockaddr_in*)&client_addr;
-            inet_ntop(AF_INET, &s->sin_addr, client_ip, sizeof client_ip);
-        }
-        else {
-            struct sockaddr_in6* s = (struct sockaddr_in6*)&client_addr;
-            inet_ntop(AF_INET6, &s->sin6_addr, client_ip, sizeof client_ip);
-        }
-
-        // Log accepted connection
-        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
-
-        // Open the file for appending data
-        data_file = fopen(DATA_FILE, "a");
-        if (data_file == NULL) {
-            syslog(LOG_ERR, "Failed to open file for appending: %s", DATA_FILE);
-            exit(EXIT_FAILURE);
-        }
-
-        // Read data from the client and write to the file
-        while ((bytes_read = recv(client_fd, buffer, BUFFER_SIZE, 0)) > 0) {
-            fwrite(buffer, 1, bytes_read, data_file);
-
-            // If newline is found, send back the contents of the file
-            if (strchr(buffer, '\n')) {
-                fclose(data_file);  // Close the file after writing
-                data_file = fopen(DATA_FILE, "r");  // Reopen the file for reading
-                if (data_file == NULL) {
-                    syslog(LOG_ERR, "Failed to open file for reading: %s", DATA_FILE);
-                    exit(EXIT_FAILURE);
-                }
-
-                // Send file contents back to the client
-                while (fgets(buffer, BUFFER_SIZE, data_file) != NULL) {
-                    send(client_fd, buffer, strlen(buffer), 0);
-                }
-
-                fclose(data_file);  // Close after reading
-                break;  // Process the next client connection
-            }
-        }
-
-        // Log closed connection
-        syslog(LOG_INFO, "Closed connection from %s", client_ip);
-        close(client_fd);
-        client_fd = -1;
-        */
 
         // Allocate params and spawn a thread to handle this client
         client_params_t* cparams = (client_params_t*)malloc(sizeof(client_params_t));
@@ -395,13 +348,12 @@ int main(int argc, char* argv[]) {
         if (!node) {
             syslog(LOG_ERR, "Malloc failed for thread_list_node");
             // We won't be able to track the thread for joining, but let's keep going
-            // We won't kill the program; just no record in the list
         } else {
             node->thread_id = client_tid;
             SLIST_INSERT_HEAD(&head, node, entries);
         }
 
-        // We set client_fd back to -1 to avoid confusion in main
+        // Reset client_fd to avoid confusion in main
         client_fd = -1;
     }
 
