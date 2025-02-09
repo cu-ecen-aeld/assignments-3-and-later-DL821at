@@ -1,0 +1,12 @@
+[Unit]
+Description=AESD Socket Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/aesdsocket -d
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
