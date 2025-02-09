@@ -206,8 +206,9 @@ void* client_thread_func(void* arg) {
 
     char buffer[BUFFER_SIZE];
     ssize_t bytes_read;
-    
-    // Read data from the client and write it to the file.
+    int newline_triggered = 0;  // Flag to indicate if a newline was received
+
+    // Repeatedly read data from the client
     while ((bytes_read = recv(local_fd, buffer, BUFFER_SIZE, 0)) > 0) {
         syslog(LOG_INFO, "Received %zd bytes from %s", bytes_read, client_ip);
         pthread_mutex_lock(&file_mutex);
@@ -217,27 +218,42 @@ void* client_thread_func(void* arg) {
             pthread_mutex_unlock(&file_mutex);
             break;
         }
-        size_t written = fwrite(buffer, 1, bytes_read, data_file_ptr);
-        fflush(data_file_ptr);  // Ensure data is flushed immediately
-        if (written < bytes_read) {
-            syslog(LOG_ERR, "Incomplete write: wrote %zu of %zd bytes", written, bytes_read);
-        }
+        fwrite(buffer, 1, bytes_read, data_file_ptr);
+        // No explicit fflush() here, to remain as close as possible to your working local version
         fclose(data_file_ptr);
         pthread_mutex_unlock(&file_mutex);
-    }
-    
-    // After finishing reading from the client, attempt to send back the file contents.
-    pthread_mutex_lock(&file_mutex);
-    FILE* data_file_ptr = fopen(DATA_FILE, "r");
-    if (data_file_ptr) {
-        while (fgets(buffer, BUFFER_SIZE, data_file_ptr) != NULL) {
-            send(local_fd, buffer, strlen(buffer), 0);
+
+        if (strchr(buffer, '\n')) {
+            newline_triggered = 1;
+            pthread_mutex_lock(&file_mutex);
+            data_file_ptr = fopen(DATA_FILE, "r");
+            if (!data_file_ptr) {
+                syslog(LOG_ERR, "Failed to open file for reading: %s", DATA_FILE);
+                pthread_mutex_unlock(&file_mutex);
+                break;
+            }
+            while (fgets(buffer, BUFFER_SIZE, data_file_ptr) != NULL) {
+                send(local_fd, buffer, strlen(buffer), 0);
+            }
+            fclose(data_file_ptr);
+            pthread_mutex_unlock(&file_mutex);
+            break; // done with this connection
         }
-        fclose(data_file_ptr);
-    } else {
-        syslog(LOG_ERR, "Failed to open file for reading: %s", DATA_FILE);
     }
-    pthread_mutex_unlock(&file_mutex);
+    // If connection closed normally and no newline was triggered, send the file contents now.
+    if (!newline_triggered && bytes_read == 0) {
+        pthread_mutex_lock(&file_mutex);
+        FILE* data_file_ptr = fopen(DATA_FILE, "r");
+        if (data_file_ptr) {
+            while (fgets(buffer, BUFFER_SIZE, data_file_ptr) != NULL) {
+                send(local_fd, buffer, strlen(buffer), 0);
+            }
+            fclose(data_file_ptr);
+        } else {
+            syslog(LOG_ERR, "Failed to open file for reading (post-loop): %s", DATA_FILE);
+        }
+        pthread_mutex_unlock(&file_mutex);
+    }
 
     syslog(LOG_INFO, "Closed connection from %s", client_ip);
     close(local_fd);
@@ -311,7 +327,6 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // Accept a client connection
         client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
             syslog(LOG_ERR, "Accept failed");
