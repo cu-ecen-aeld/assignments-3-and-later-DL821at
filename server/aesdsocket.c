@@ -53,8 +53,7 @@ void clean_up() {
     if (server_fd != -1) close(server_fd);
 
     // Remove the file only if a signal was received
-    // For testing purposes, the removal of DATA_FILE is commented out
-    // so that the file persists for validation.
+    // For testing purposes, we have commented this out so that the file persists for validation.
     // if (stop) {
     //     remove(DATA_FILE);
     //     syslog(LOG_INFO, "Removed file %s", DATA_FILE);
@@ -205,13 +204,12 @@ void* client_thread_func(void* arg) {
     }
     syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
-    // We'll reuse your buffer approach
     char buffer[BUFFER_SIZE];
     ssize_t bytes_read;
-
-    // Repeatedly read data from the client
     while ((bytes_read = recv(local_fd, buffer, BUFFER_SIZE, 0)) > 0) {
-        // Write to the file under mutex
+        syslog(LOG_INFO, "Received %zd bytes from %s", bytes_read, client_ip);
+
+        // Write the received data to the file
         pthread_mutex_lock(&file_mutex);
         FILE* data_file_ptr = fopen(DATA_FILE, "a");
         if (!data_file_ptr) {
@@ -219,11 +217,15 @@ void* client_thread_func(void* arg) {
             pthread_mutex_unlock(&file_mutex);
             break;
         }
-        fwrite(buffer, 1, bytes_read, data_file_ptr);
+        size_t written = fwrite(buffer, 1, bytes_read, data_file_ptr);
+        fflush(data_file_ptr); // Explicitly flush the output
+        if (written < bytes_read) {
+            syslog(LOG_ERR, "Incomplete write: wrote %zu of %zd bytes", written, bytes_read);
+        }
         fclose(data_file_ptr);
         pthread_mutex_unlock(&file_mutex);
 
-        // If newline found, read entire file back to client
+        // If a newline is found in the received data, send back the file contents
         if (strchr(buffer, '\n')) {
             pthread_mutex_lock(&file_mutex);
             data_file_ptr = fopen(DATA_FILE, "r");
@@ -237,11 +239,10 @@ void* client_thread_func(void* arg) {
             }
             fclose(data_file_ptr);
             pthread_mutex_unlock(&file_mutex);
-            break; // done with this connection
+            break; // Done with this connection
         }
     }
 
-    // Log closed connection
     syslog(LOG_INFO, "Closed connection from %s", client_ip);
     close(local_fd);
     free(params);
@@ -298,11 +299,9 @@ int main(int argc, char* argv[]) {
     pthread_create(&timer_tid, NULL, timer_thread_func, NULL);
 
     while (!stop) {
-        // Use select() to add a timeout to the accept() call
         FD_ZERO(&readfds);
         FD_SET(server_fd, &readfds);
 
-        // Timeout of 1 second
         tv.tv_sec = 1;
         tv.tv_usec = 0;
 
@@ -311,19 +310,16 @@ int main(int argc, char* argv[]) {
             syslog(LOG_ERR, "select error");
             break;
         } else if (ret == 0) {
-            // Timeout occurred, check stop flag and continue
             if (stop) break;
             continue;
         }
 
-        // Accept a client connection
         client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
             syslog(LOG_ERR, "Accept failed");
             exit(EXIT_FAILURE);
         }
 
-        // Allocate params and spawn a thread to handle this client
         client_params_t* cparams = (client_params_t*)malloc(sizeof(client_params_t));
         if (!cparams) {
             syslog(LOG_ERR, "Malloc failed for client_params");
@@ -343,30 +339,24 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // Track the thread in a linked list so we can join later
         thread_list_node_t* node = malloc(sizeof(thread_list_node_t));
         if (!node) {
             syslog(LOG_ERR, "Malloc failed for thread_list_node");
-            // We won't be able to track the thread for joining, but let's keep going
         } else {
             node->thread_id = client_tid;
             SLIST_INSERT_HEAD(&head, node, entries);
         }
 
-        // Reset client_fd to avoid confusion in main
         client_fd = -1;
     }
 
-    // Stop accepting new connections, close the server fd
     if (server_fd != -1) {
         close(server_fd);
         server_fd = -1;
     }
 
-    // JOIN THE TIMER THREAD
     pthread_join(timer_tid, NULL);
 
-    // JOIN ALL CLIENT THREADS
     thread_list_node_t* curr = SLIST_FIRST(&head);
     while (curr != NULL) {
         thread_list_node_t* tmp = SLIST_NEXT(curr, entries);
@@ -375,10 +365,7 @@ int main(int argc, char* argv[]) {
         curr = tmp;
     }
 
-    // Destroy mutex
     pthread_mutex_destroy(&file_mutex);
-
-    // Cleanup on exit
     clean_up();
     return 0;
 }
