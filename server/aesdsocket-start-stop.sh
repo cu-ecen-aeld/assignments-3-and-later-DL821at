@@ -1,4 +1,12 @@
 #!/bin/sh
+### BEGIN INIT INFO
+# Provides:          aesdsocket
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start aesdsocket daemon at boot time
+### END INIT INFO
 
 # Define the path to the binary and the PID file location
 AESDSOCKET_PATH="/usr/bin/aesdsocket"
