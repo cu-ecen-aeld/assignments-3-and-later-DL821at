@@ -21,7 +21,7 @@
 #include <linux/slab.h>    // kmalloc, kfree, krealloc
 #include <linux/uaccess.h> // copy_to_user, copy_from_user
 #include <linux/string.h>
-#include "aesdchar-circular-buffer.h"
+#include "aesd-circular-buffer.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
