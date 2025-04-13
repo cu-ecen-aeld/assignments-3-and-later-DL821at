@@ -40,6 +40,14 @@ MODULE_LICENSE("Dual BSD/GPL");
  *   aesd_circular_buffer_deinit() (if you have one).
  */
 
+ struct aesd_dev {
+    struct cdev cdev;
+    struct mutex m;
+    struct aesd_circular_buffer buf;
+    struct aesd_buffer_entry entry;
+};
+
+
 struct aesd_dev aesd_device;
 
 int aesd_open(struct inode *inode, struct file *filp)
