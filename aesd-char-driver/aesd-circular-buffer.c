@@ -21,6 +21,7 @@
 
  #ifdef __KERNEL__
  #include <linux/string.h>
+ #include <linux/slab.h>
  #else
  #include <string.h>
  #endif
@@ -42,9 +43,9 @@
   *         in the buffer (not enough data is written).
   */
  struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(
-     struct aesd_circular_buffer *buffer,
-     size_t char_offset,
-     size_t *entry_offset_byte_rtn)
+      struct aesd_circular_buffer *buffer,
+      size_t char_offset,
+      size_t *entry_offset_byte_rtn)
  {
      size_t current_offset = 0;
      size_t entry_count = 0; // how many valid entries in the ring
@@ -53,27 +54,27 @@
      // If the buffer is full, all AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED entries are valid
      // If not full, the number of valid entries is how many we wrote
      if (buffer->full) {
-         entry_count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+          entry_count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
      } else {
-         // in_offs >= out_offs => entries = in_offs - out_offs
-         // in_offs < out_offs  => wrap around => in_offs + (SIZE - out_offs)
-         entry_count = (buffer->in_offs + AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED
-                        - buffer->out_offs) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+          // in_offs >= out_offs => entries = in_offs - out_offs
+          // in_offs < out_offs  => wrap around => in_offs + (SIZE - out_offs)
+          entry_count = (buffer->in_offs + AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED - buffer->out_offs) %
+                        AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
      }
  
      // Start from the oldest entry at out_offs
      index = buffer->out_offs;
      for (size_t i = 0; i < entry_count; i++) {
-         struct aesd_buffer_entry *entry = &buffer->entry[index];
-         size_t entry_size = entry->size;
-         // Check if char_offset lies within this entry
-         if (char_offset < current_offset + entry_size) {
-             // Found the entry containing our offset
-             *entry_offset_byte_rtn = char_offset - current_offset;
-             return entry;
-         }
-         current_offset += entry_size;
-         index = (index + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+          struct aesd_buffer_entry *entry = &buffer->entry[index];
+          size_t entry_size = entry->size;
+          // Check if char_offset lies within this entry
+          if (char_offset < current_offset + entry_size) {
+              // Found the entry containing our offset
+              *entry_offset_byte_rtn = char_offset - current_offset;
+              return entry;
+          }
+          current_offset += entry_size;
+          index = (index + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
      }
  
      // If we exhaust the loop without finding the offset, it's not in the buffer
@@ -92,26 +93,35 @@
   * must have a lifetime managed by the caller.
   */
  void aesd_circular_buffer_add_entry(
-     struct aesd_circular_buffer *buffer,
-     const struct aesd_buffer_entry *add_entry)
+      struct aesd_circular_buffer *buffer,
+      const struct aesd_buffer_entry *add_entry)
  {
-     // Place the new entry at in_offs
-     buffer->entry[buffer->in_offs] = *add_entry;
- 
-     // If the buffer is currently full, that means we are overwriting the oldest entry
+     // If the buffer is currently full, free the memory of the oldest entry
+     // before overwriting it. This ensures that memory associated with write
+     // commands older than the most recent 10 is released.
      if (buffer->full) {
-         // Move out_offs forward to drop the oldest entry
-         buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+          if (buffer->entry[buffer->out_offs].buffptr != NULL) {
+              kfree((void *)buffer->entry[buffer->out_offs].buffptr);
+              buffer->entry[buffer->out_offs].buffptr = NULL;
+              buffer->entry[buffer->out_offs].size = 0;
+          }
+          // Move out_offs forward to drop the oldest entry
+          buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
      }
+ 
+     // Place the new entry at in_offs. The caller must ensure that memory for
+     // add_entry->buffptr is allocated (e.g., via kmalloc) and that add_entry->size
+     // is set to the complete command length (terminated with '\n').
+     buffer->entry[buffer->in_offs] = *add_entry;
  
      // Advance in_offs
      buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
  
      // If in_offs wrapped around and caught up to out_offs, the buffer is now full
      if (buffer->in_offs == buffer->out_offs) {
-         buffer->full = true;
+          buffer->full = true;
      } else {
-         buffer->full = false;
+          buffer->full = false;
      }
  }
  
@@ -122,6 +132,28 @@
  {
      memset(buffer, 0, sizeof(struct aesd_circular_buffer));
      // We start with an empty buffer, so full = false
+     buffer->full = false;
+ }
+ 
+ /**
+  * Deinitializes the circular buffer described by @param buffer.
+  *
+  * This function frees any allocated memory referenced in each valid entry and
+  * resets the buffer state.  It is assumed that any necessary locking is handled
+  * by the caller.
+  */
+ void aesd_circular_buffer_deinit(struct aesd_circular_buffer *buffer)
+ {
+     int i;
+     for (i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++) {
+          if (buffer->entry[i].buffptr) {
+              kfree((void *)buffer->entry[i].buffptr);
+              buffer->entry[i].buffptr = NULL;
+              buffer->entry[i].size = 0;
+          }
+     }
+     buffer->in_offs = 0;
+     buffer->out_offs = 0;
      buffer->full = false;
  }
  
