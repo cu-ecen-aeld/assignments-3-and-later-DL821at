@@ -21,7 +21,7 @@
 #include <linux/slab.h>    // kmalloc, kfree, krealloc
 #include <linux/uaccess.h> // copy_to_user, copy_from_user
 #include <linux/string.h>
-#include "aesdchar.h"
+#include "aesdchar-circular-buffer.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -39,14 +39,6 @@ MODULE_LICENSE("Dual BSD/GPL");
  *   aesd_circular_buffer_find_entry_offset_for_fpos(), and 
  *   aesd_circular_buffer_deinit() (if you have one).
  */
-
- struct aesd_dev {
-    struct cdev cdev;
-    struct mutex m;
-    struct aesd_circular_buffer buf;
-    struct aesd_buffer_entry entry;
-};
-
 
 struct aesd_dev aesd_device;
 
