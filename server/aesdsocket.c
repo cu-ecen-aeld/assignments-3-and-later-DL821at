@@ -27,6 +27,8 @@
  #include <pthread.h>
  #include <time.h>
  #include <sys/queue.h>
+ #include <sys/ioctl.h>           // Added for ioctl support
+ #include "aesd_ioctl.h"          // Added for AESDCHAR_IOCSEEKTO
  
  #define PORT "9000"
  #define BUFFER_SIZE 1024
@@ -161,6 +163,7 @@
      }
      pthread_mutex_unlock(&file_mutex);
  }
+ 
  /* Timer thread to append timestamps every 10 seconds */
  void* timer_thread_func(void* arg) {
      (void)arg;
@@ -196,12 +199,50 @@
      }
      syslog(LOG_INFO, "Accepted connection from %s", client_ip);
  
+     /* Open the data file/device once per connection */
+ #ifdef USE_AESD_CHAR_DEVICE
+     int data_fd = open(DATA_FILE, O_RDWR);
+     if (data_fd < 0) {
+         syslog(LOG_ERR, "Failed to open %s: %s", DATA_FILE, strerror(errno));
+         close(local_fd);
+         free(params);
+         pthread_exit(NULL);
+     }
+ #endif
+ 
      char buffer[BUFFER_SIZE];
      ssize_t bytes_read;
-     int newline_triggered = 0;
+     bool newline_triggered = false;
  
      while ((bytes_read = recv(local_fd, buffer, BUFFER_SIZE, 0)) > 0) {
          syslog(LOG_INFO, "Received %zd bytes from %s", bytes_read, client_ip);
+ 
+         /* Special seek command handling */
+ #ifdef USE_AESD_CHAR_DEVICE
+         if (strncmp(buffer, "AESDCHAR_IOCSEEKTO:", 19) == 0) {
+             struct aesd_seekto seekto;
+             if (sscanf(buffer + 19, "%u,%u", &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
+                 if (ioctl(data_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
+                     syslog(LOG_ERR, "ioctl failed: %s", strerror(errno));
+                 }
+                 /* Read from current offset */
+                 char readbuf[BUFFER_SIZE];
+                 ssize_t rd;
+                 while ((rd = read(data_fd, readbuf, BUFFER_SIZE)) > 0) {
+                     send(local_fd, readbuf, rd, 0);
+                 }
+             }
+             break;
+         }
+ #endif
+ 
+         /* Normal write */
+ #ifdef USE_AESD_CHAR_DEVICE
+         if (write(data_fd, buffer, bytes_read) < 0) {
+             syslog(LOG_ERR, "Failed to write to %s: %s", DATA_FILE, strerror(errno));
+             break;
+         }
+ #else
          pthread_mutex_lock(&file_mutex);
          FILE* data_file_ptr = fopen(DATA_FILE, "a");
          if (!data_file_ptr) {
@@ -212,9 +253,19 @@
          fwrite(buffer, 1, bytes_read, data_file_ptr);
          fclose(data_file_ptr);
          pthread_mutex_unlock(&file_mutex);
+ #endif
  
+         /* On newline, echo all data */
          if (strchr(buffer, '\n')) {
-             newline_triggered = 1;
+             newline_triggered = true;
+ #ifdef USE_AESD_CHAR_DEVICE
+             lseek(data_fd, 0, SEEK_SET);
+             char readbuf[BUFFER_SIZE];
+             ssize_t rd;
+             while ((rd = read(data_fd, readbuf, BUFFER_SIZE)) > 0) {
+                 send(local_fd, readbuf, rd, 0);
+             }
+ #else
              pthread_mutex_lock(&file_mutex);
              data_file_ptr = fopen(DATA_FILE, "r");
              if (!data_file_ptr) {
@@ -222,20 +273,30 @@
                  pthread_mutex_unlock(&file_mutex);
                  break;
              }
-             while (fgets(buffer, BUFFER_SIZE, data_file_ptr) != NULL) {
+             while (fgets(buffer, BUFFER_SIZE, data_file_ptr)) {
                  send(local_fd, buffer, strlen(buffer), 0);
              }
              fclose(data_file_ptr);
              pthread_mutex_unlock(&file_mutex);
+ #endif
              break;
          }
      }
-     
+ 
+     /* If closed without newline */
      if (!newline_triggered && bytes_read == 0) {
+ #ifdef USE_AESD_CHAR_DEVICE
+         lseek(data_fd, 0, SEEK_SET);
+         char readbuf[BUFFER_SIZE];
+         ssize_t rd;
+         while ((rd = read(data_fd, readbuf, BUFFER_SIZE)) > 0) {
+             send(local_fd, readbuf, rd, 0);
+         }
+ #else
          pthread_mutex_lock(&file_mutex);
          FILE* data_file_ptr = fopen(DATA_FILE, "r");
          if (data_file_ptr) {
-             while (fgets(buffer, BUFFER_SIZE, data_file_ptr) != NULL) {
+             while (fgets(buffer, BUFFER_SIZE, data_file_ptr)) {
                  send(local_fd, buffer, strlen(buffer), 0);
              }
              fclose(data_file_ptr);
@@ -243,11 +304,15 @@
              syslog(LOG_ERR, "Failed to open file for reading (post-loop): %s", DATA_FILE);
          }
          pthread_mutex_unlock(&file_mutex);
+ #endif
      }
-     
+ 
      syslog(LOG_INFO, "Closed connection from %s", client_ip);
      close(local_fd);
      free(params);
+ #ifdef USE_AESD_CHAR_DEVICE
+     close(data_fd);
+ #endif
      pthread_exit(NULL);
      return NULL;
  }
@@ -261,7 +326,6 @@
  
      openlog("aesdsocket", LOG_PID, LOG_USER);
  
-     /* When using the driver, do not remove /dev/aesdchar. Otherwise, clear file */
  #ifndef USE_AESD_CHAR_DEVICE
      remove(DATA_FILE);
      syslog(LOG_INFO, "Removed file %s before starting", DATA_FILE);
@@ -351,7 +415,7 @@
  #endif
  
      thread_list_node_t* curr = SLIST_FIRST(&head);
-     while (curr != NULL) {
+     while (curr) {
          thread_list_node_t* tmp = SLIST_NEXT(curr, entries);
          pthread_join(curr->thread_id, NULL);
          free(curr);

@@ -16,13 +16,14 @@
  #include <linux/printk.h>
  #include <linux/types.h>
  #include <linux/cdev.h>
- #include <linux/fs.h>          // file_operations
+ #include <linux/fs.h>          // file_operations, llseek, unlocked_ioctl
  #include <linux/mutex.h>
  #include <linux/slab.h>        // kmalloc, kfree, krealloc
  #include <linux/uaccess.h>     // copy_to_user, copy_from_user
  #include <linux/string.h>
  #include "aesd-circular-buffer.h"
- #include "aesdchar.h"  // This header now defines struct aesd_dev fully
+ #include "aesdchar.h"          // struct aesd_dev
+ #include "aesd_ioctl.h"        // <<< added for IOCTL
  
  // Add a simple debug macro to prevent PDEBUG implicit declaration error
  #ifndef PDEBUG
@@ -32,25 +33,71 @@
  int aesd_major = 0; // use dynamic major
  int aesd_minor = 0;
  
- MODULE_AUTHOR("DL821at"); /** TODO: fill in your name **/
+ MODULE_AUTHOR("DL821at");
  MODULE_LICENSE("Dual BSD/GPL");
  
  /* 
-  * The file aesdchar.h defines:
-  *   struct aesd_dev {
-  *       struct cdev cdev;
-  *       struct mutex m;
-  *       struct aesd_circular_buffer buf;
-  *       struct aesd_buffer_entry entry;
-  *   };
-  * which holds:
-  *   - The character device structure (cdev)
-  *   - A mutex for mutual exclusion (m)
-  *   - The circular buffer state (buf)
-  *   - A temporary entry for an in-progress write (entry)
+  * struct aesd_dev {
+  *     struct cdev cdev;
+  *     struct mutex m;
+  *     struct aesd_circular_buffer buf;
+  *     struct aesd_buffer_entry entry;
+  * };
   */
+ static struct aesd_dev aesd_device;
  
- struct aesd_dev aesd_device;
+ /**
+  * Custom llseek implementation.
+  */
+ static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+ {
+     struct aesd_dev *dev = filp->private_data;
+     loff_t newpos;
+     size_t total_size = 0;
+     size_t entry_count, i;
+     uint8_t index;
+ 
+     if (mutex_lock_interruptible(&dev->m))
+         return -ERESTARTSYS;
+ 
+     if (dev->buf.full) {
+         entry_count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+     } else {
+         entry_count = (dev->buf.in_offs + AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED
+                        - dev->buf.out_offs) %
+                       AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+     }
+ 
+     index = dev->buf.out_offs;
+     for (i = 0; i < entry_count; i++) {
+         total_size += dev->buf.entry[index].size;
+         index = (index + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+     }
+ 
+     switch (whence) {
+     case SEEK_SET:
+         newpos = offset;
+         break;
+     case SEEK_CUR:
+         newpos = filp->f_pos + offset;
+         break;
+     case SEEK_END:
+         newpos = total_size + offset;
+         break;
+     default:
+         mutex_unlock(&dev->m);
+         return -EINVAL;
+     }
+ 
+     if (newpos < 0 || newpos > total_size) {
+         mutex_unlock(&dev->m);
+         return -EINVAL;
+     }
+ 
+     filp->f_pos = newpos;
+     mutex_unlock(&dev->m);
+     return newpos;
+ }
  
  int aesd_open(struct inode *inode, struct file *filp)
  {
@@ -62,9 +109,6 @@
  int aesd_release(struct inode *inode, struct file *filp)
  {
      PDEBUG("release");
-     /**
-      * TODO: handle release
-      */
      return 0;
  }
  
@@ -76,21 +120,15 @@
      struct aesd_buffer_entry *entry = NULL;
  
      PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
-     /**
-      * TODO: handle read
-      */
      if (mutex_lock_interruptible(&dev->m))
          return -ERESTARTSYS;
  
-     /* Use helper to find which circular buffer entry contains the requested f_pos */
      entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buf, *f_pos, &entry_offset);
      if (!entry) {
-         /* No entry found: return 0 to indicate EOF */
          mutex_unlock(&dev->m);
          return 0;
      }
  
-     /* Calculate the number of bytes available from this entry */
      if (entry->size - entry_offset > count)
          retval = count;
      else
@@ -111,20 +149,12 @@
      ssize_t retval = -ENOMEM;
      struct aesd_dev *dev = filp->private_data;
      char *tmp = NULL;
-     int i = 0;
+     int i;
  
      PDEBUG("write %zu bytes with offset %lld", count, *f_pos);
-     /**
-      * TODO: handle write
-      */
      if (mutex_lock_interruptible(&dev->m))
          return -ERESTARTSYS;
  
-     /* 
-      * Accumulate the new data into the temporary incomplete write entry.
-      * If this is the first write, allocate a new buffer;
-      * otherwise, reallocate to extend the existing buffer.
-      */
      if (dev->entry.size == 0) {
          dev->entry.buffptr = kmalloc(count, GFP_KERNEL);
          if (!dev->entry.buffptr) {
@@ -139,7 +169,7 @@
          }
          dev->entry.buffptr = tmp;
      }
-     /* Copy the data from user into the temporary buffer */
+ 
      if (copy_from_user(dev->entry.buffptr + dev->entry.size, buf, count)) {
          retval = -EFAULT;
          goto out;
@@ -147,29 +177,84 @@
      dev->entry.size += count;
      retval = count;
  
-     /* Process the temporary buffer for any complete write commands (ending with '\n') */
      for (i = 0; i < dev->entry.size; i++) {
          if (dev->entry.buffptr[i] == '\n') {
-             /* A complete command is ready: add it to the circular buffer */
              aesd_circular_buffer_add_entry(&dev->buf, &dev->entry);
-             /* Reset the temporary entry for future writes */
              dev->entry.buffptr = NULL;
              dev->entry.size = 0;
-             break; /* Process one complete command at a time */
+             break;
          }
      }
-     // *f_pos is not used for the device in this implementation
  out:
      mutex_unlock(&dev->m);
      return retval;
  }
  
+ /**
+  * IOCTL handler for AESDCHAR_IOCSEEKTO
+  */
+ static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+ {
+     struct aesd_dev *dev = filp->private_data;
+     struct aesd_seekto seekto;
+     size_t entry_count, i;
+     uint8_t index;
+     struct aesd_buffer_entry *entry;
+     loff_t newpos = 0;
+     size_t offset = 0;
+     int ret = 0;
+ 
+     if (cmd != AESDCHAR_IOCSEEKTO)
+         return -ENOTTY;
+ 
+     if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)))
+         return -EFAULT;
+ 
+     if (mutex_lock_interruptible(&dev->m))
+         return -ERESTARTSYS;
+ 
+     if (dev->buf.full) {
+         entry_count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+     } else {
+         entry_count = (dev->buf.in_offs + AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED
+                        - dev->buf.out_offs) %
+                       AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+     }
+ 
+     if (seekto.write_cmd >= entry_count) {
+         ret = -EINVAL;
+         goto ioctl_out;
+     }
+ 
+     index = dev->buf.out_offs;
+     for (i = 0; i < seekto.write_cmd; i++) {
+         entry = &dev->buf.entry[index];
+         offset += entry->size;
+         index = (index + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+     }
+     entry = &dev->buf.entry[index];
+ 
+     if (seekto.write_cmd_offset >= entry->size) {
+         ret = -EINVAL;
+         goto ioctl_out;
+     }
+     offset += seekto.write_cmd_offset;
+     newpos = offset;
+     filp->f_pos = newpos;
+ 
+ ioctl_out:
+     mutex_unlock(&dev->m);
+     return ret;
+ }
+ 
  struct file_operations aesd_fops = {
-     .owner = THIS_MODULE,
-     .read = aesd_read,
-     .write = aesd_write,
-     .open = aesd_open,
-     .release = aesd_release,
+     .owner          = THIS_MODULE,
+     .llseek         = aesd_llseek,
+     .read           = aesd_read,
+     .write          = aesd_write,
+     .unlocked_ioctl = aesd_ioctl,   // <<< added
+     .open           = aesd_open,
+     .release        = aesd_release,
  };
  
  static int aesd_setup_cdev(struct aesd_dev *dev)
@@ -178,7 +263,7 @@
  
      cdev_init(&dev->cdev, &aesd_fops);
      dev->cdev.owner = THIS_MODULE;
-     dev->cdev.ops = &aesd_fops;
+     dev->cdev.ops   = &aesd_fops;
      err = cdev_add(&dev->cdev, devno, 1);
      if (err) {
          printk(KERN_ERR "Error %d adding aesd cdev", err);
@@ -199,15 +284,10 @@
      }
      memset(&aesd_device, 0, sizeof(struct aesd_dev));
  
-     /**
-      * TODO: initialize the AESD specific portion of the device
-      */
-     /* Initialize the mutex, the circular buffer and the temporary entry */
      mutex_init(&aesd_device.m);
      aesd_circular_buffer_init(&aesd_device.buf);
-     /* Initialize the temporary write entry to empty */
      aesd_device.entry.buffptr = NULL;
-     aesd_device.entry.size = 0;
+     aesd_device.entry.size    = 0;
  
      result = aesd_setup_cdev(&aesd_device);
      if (result) {
@@ -222,18 +302,10 @@
  
      cdev_del(&aesd_device.cdev);
  
-     /**
-      * TODO: cleanup AESD specific portions here as necessary
-      */
-     /* Free any remaining memory in the temporary write entry */
      if (aesd_device.entry.buffptr) {
          kfree(aesd_device.entry.buffptr);
-         aesd_device.entry.buffptr = NULL;
-         aesd_device.entry.size = 0;
      }
-     /* Cleanup the circular buffer; assume aesd_circular_buffer_deinit frees allocated entries */
      aesd_circular_buffer_deinit(&aesd_device.buf);
- 
      unregister_chrdev_region(devno, 1);
  }
  
