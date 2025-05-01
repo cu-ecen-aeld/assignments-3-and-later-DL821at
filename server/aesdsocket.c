@@ -7,7 +7,7 @@
  * (set to 1 by default), then all I/O is redirected to /dev/aesdchar,
  * timestamp printing is removed, and the driver endpoint is preserved.
  *
- * Author: Your Name Here
+ * Author: DL821at
  */
 
  #include <stdio.h>
@@ -28,7 +28,7 @@
  #include <time.h>
  #include <sys/queue.h>
  #include <sys/ioctl.h>           // Added for ioctl support
- #include "aesd_ioctl.h"          // Added for AESDCHAR_IOCSEEKTO
+ #include "../aesd-char-driver/aesd_ioctl.h"  // Use driver’s header via relative path
  
  #define PORT "9000"
  #define BUFFER_SIZE 1024
@@ -256,65 +256,14 @@
  #endif
  
          /* On newline, echo all data */
-         if (strchr(buffer, '\n')) {
-             newline_triggered = true;
- #ifdef USE_AESD_CHAR_DEVICE
-             lseek(data_fd, 0, SEEK_SET);
-             char readbuf[BUFFER_SIZE];
-             ssize_t rd;
-             while ((rd = read(data_fd, readbuf, BUFFER_SIZE)) > 0) {
-                 send(local_fd, readbuf, rd, 0);
-             }
- #else
-             pthread_mutex_lock(&file_mutex);
-             data_file_ptr = fopen(DATA_FILE, "r");
-             if (!data_file_ptr) {
-                 syslog(LOG_ERR, "Failed to open file for reading: %s", DATA_FILE);
-                 pthread_mutex_unlock(&file_mutex);
-                 break;
-             }
-             while (fgets(buffer, BUFFER_SIZE, data_file_ptr)) {
-                 send(local_fd, buffer, strlen(buffer), 0);
-             }
-             fclose(data_file_ptr);
-             pthread_mutex_unlock(&file_mutex);
- #endif
-             break;
-         }
+         if (strchr(buffer, '\n')) { newline_triggered = true; lseek(data_fd, 0, SEEK_SET); char readbuf[BUFFER_SIZE]; ssize_t rd; while ((rd = read(data_fd, readbuf, BUFFER_SIZE)) > 0) send(local_fd, readbuf, rd, 0); break; }
      }
  
      /* If closed without newline */
-     if (!newline_triggered && bytes_read == 0) {
- #ifdef USE_AESD_CHAR_DEVICE
-         lseek(data_fd, 0, SEEK_SET);
-         char readbuf[BUFFER_SIZE];
-         ssize_t rd;
-         while ((rd = read(data_fd, readbuf, BUFFER_SIZE)) > 0) {
-             send(local_fd, readbuf, rd, 0);
-         }
- #else
-         pthread_mutex_lock(&file_mutex);
-         FILE* data_file_ptr = fopen(DATA_FILE, "r");
-         if (data_file_ptr) {
-             while (fgets(buffer, BUFFER_SIZE, data_file_ptr)) {
-                 send(local_fd, buffer, strlen(buffer), 0);
-             }
-             fclose(data_file_ptr);
-         } else {
-             syslog(LOG_ERR, "Failed to open file for reading (post-loop): %s", DATA_FILE);
-         }
-         pthread_mutex_unlock(&file_mutex);
- #endif
-     }
+     if (!newline_triggered && bytes_read == 0) { lseek(data_fd, 0, SEEK_SET); char readbuf[BUFFER_SIZE]; ssize_t rd; while ((rd = read(data_fd, readbuf, BUFFER_SIZE)) > 0) send(local_fd, readbuf, rd, 0); }
  
      syslog(LOG_INFO, "Closed connection from %s", client_ip);
-     close(local_fd);
-     free(params);
- #ifdef USE_AESD_CHAR_DEVICE
-     close(data_fd);
- #endif
-     pthread_exit(NULL);
-     return NULL;
+     close(local_fd); free(params); close(data_fd); pthread_exit(NULL); return NULL;
  }
  
  int main(int argc, char* argv[]) {
@@ -358,68 +307,38 @@
      while (!stop) {
          FD_ZERO(&readfds);
          FD_SET(server_fd, &readfds);
-         tv.tv_sec = 1;
-         tv.tv_usec = 0;
+         tv.tv_sec = 1; tv.tv_usec = 0;
          int ret = select(server_fd + 1, &readfds, NULL, NULL, &tv);
-         if (ret == -1) {
-             syslog(LOG_ERR, "select error");
-             break;
-         } else if (ret == 0) {
-             if (stop) break;
-             continue;
-         }
+         if (ret == -1) { syslog(LOG_ERR, "select error"); break; } else if (ret == 0) { if (stop) break; continue; }
  
          client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
-         if (client_fd < 0) {
-             syslog(LOG_ERR, "Accept failed");
-             exit(EXIT_FAILURE);
-         }
+         if (client_fd < 0) { syslog(LOG_ERR, "Accept failed"); exit(EXIT_FAILURE); }
  
          client_params_t* cparams = malloc(sizeof(client_params_t));
-         if (!cparams) {
-             syslog(LOG_ERR, "Malloc failed for client_params");
-             close(client_fd);
-             client_fd = -1;
-             continue;
-         }
+         if (!cparams) { syslog(LOG_ERR, "Malloc failed for client_params"); close(client_fd); continue; }
          cparams->thread_client_fd = client_fd;
          memcpy(&cparams->client_addr, &client_addr, sizeof(client_addr));
  
          pthread_t client_tid;
          if (pthread_create(&client_tid, NULL, client_thread_func, cparams) != 0) {
-             syslog(LOG_ERR, "Failed to create client thread");
-             free(cparams);
-             close(client_fd);
-             client_fd = -1;
-             continue;
+             syslog(LOG_ERR, "Failed to create client thread"); free(cparams); close(client_fd); continue;
          }
  
          thread_list_node_t* node = malloc(sizeof(thread_list_node_t));
-         if (node) {
-             node->thread_id = client_tid;
-             SLIST_INSERT_HEAD(&head, node, entries);
-         } else {
-             syslog(LOG_ERR, "Malloc failed for thread_list_node");
-         }
+         if (node) { node->thread_id = client_tid; SLIST_INSERT_HEAD(&head, node, entries); } else { syslog(LOG_ERR, "Malloc failed for thread_list_node"); }
  
          client_fd = -1;
      }
  
-     if (server_fd != -1) {
-         close(server_fd);
-         server_fd = -1;
-     }
+     if (server_fd != -1) close(server_fd);
  
  #ifndef USE_AESD_CHAR_DEVICE
      pthread_join(timer_tid, NULL);
  #endif
  
-     thread_list_node_t* curr = SLIST_FIRST(&head);
-     while (curr) {
-         thread_list_node_t* tmp = SLIST_NEXT(curr, entries);
+     thread_list_node_t* curr;
+     SLIST_FOREACH(curr, &head, entries) {
          pthread_join(curr->thread_id, NULL);
-         free(curr);
-         curr = tmp;
      }
  
      pthread_mutex_destroy(&file_mutex);
